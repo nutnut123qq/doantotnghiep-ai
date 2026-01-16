@@ -1,13 +1,38 @@
+"""Summarization service for news articles."""
 import json
-import re
-from src.infrastructure.llm.gemini_client import GeminiClient
+from typing import Dict, Any
+from src.domain.interfaces.llm_provider import LLMProvider
+from src.shared.utils import extract_sentiment
+from src.shared.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 class SummarizationService:
-    def __init__(self):
-        self.gemini_client = GeminiClient()
+    """Service for summarizing news articles."""
+    
+    def __init__(self, llm_provider: LLMProvider):
+        """
+        Initialize summarization service.
+        
+        Args:
+            llm_provider: LLM provider for generating summaries
+        """
+        self.llm_provider = llm_provider
+        logger.info("Initialized SummarizationService")
 
-    async def summarize(self, content: str) -> dict:
+    async def summarize(self, content: str) -> Dict[str, Any]:
+        """
+        Summarize news content and extract sentiment.
+        
+        Args:
+            content: News article content
+            
+        Returns:
+            Dictionary with summary, sentiment, impact_assessment, and key_points
+        """
+        logger.info(f"Summarizing content: {len(content)} characters")
+        
         prompt = f"""Bạn là chuyên gia phân tích tài chính. Hãy phân tích bài viết tin tức sau về thị trường chứng khoán Việt Nam:
 
 {content}
@@ -26,8 +51,28 @@ Lưu ý:
 - Key points: Các điểm quan trọng nhất trong bài viết
 """
 
-        response = await self.gemini_client.generate(prompt)
+        try:
+            response = await self.llm_provider.generate(prompt)
+            logger.debug("Received summarization response")
 
+            result = self._parse_summary_response(response)
+            logger.info(f"Successfully summarized content with sentiment: {result.get('sentiment')}")
+
+            return result
+        except Exception as e:
+            logger.error(f"Error summarizing content: {str(e)}")
+            raise
+
+    def _parse_summary_response(self, response: str) -> Dict[str, Any]:
+        """
+        Parse summary response from LLM.
+        
+        Args:
+            response: LLM response string
+            
+        Returns:
+            Parsed summary dictionary
+        """
         try:
             # Try to parse JSON response
             # Remove markdown code blocks if present
@@ -64,9 +109,10 @@ Lưu ý:
             return result
 
         except json.JSONDecodeError:
+            logger.warning("Failed to parse JSON from summary response, using fallback parsing")
             # Fallback to simple parsing if JSON parsing fails
             summary = self._extract_summary(response)
-            sentiment = self._extract_sentiment(response)
+            sentiment = extract_sentiment(response)
             impact = self._extract_impact(response)
 
             return {
@@ -77,37 +123,22 @@ Lưu ý:
             }
 
     def _extract_summary(self, text: str) -> str:
-        """Extract summary from unstructured text"""
+        """Extract summary from unstructured text."""
         lines = [line.strip() for line in text.split('\n') if line.strip()]
         if lines:
             # Return first non-empty line as summary
             return lines[0][:500]  # Limit to 500 chars
         return "Không thể tạo tóm tắt"
 
-    def _extract_sentiment(self, text: str) -> str:
-        """Extract sentiment from unstructured text"""
-        text_lower = text.lower()
-
-        positive_keywords = ["positive", "tích cực", "tăng", "tốt", "khả quan", "lạc quan"]
-        negative_keywords = ["negative", "tiêu cực", "giảm", "xấu", "bi quan", "lo ngại"]
-
-        positive_count = sum(1 for keyword in positive_keywords if keyword in text_lower)
-        negative_count = sum(1 for keyword in negative_keywords if keyword in text_lower)
-
-        if positive_count > negative_count:
-            return "positive"
-        elif negative_count > positive_count:
-            return "negative"
-        else:
-            return "neutral"
-
     def _extract_impact(self, text: str) -> str:
-        """Extract impact assessment from unstructured text"""
+        """Extract impact assessment from unstructured text."""
         # Look for impact-related sentences
         sentences = text.split('.')
         for sentence in sentences:
-            if any(keyword in sentence.lower() for keyword in ["impact", "tác động", "ảnh hưởng", "affect"]):
+            if any(
+                keyword in sentence.lower() 
+                for keyword in ["impact", "tác động", "ảnh hưởng", "affect"]
+            ):
                 return sentence.strip()
 
         return "Chưa có đánh giá tác động cụ thể"
-

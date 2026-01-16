@@ -1,13 +1,12 @@
-"""
-Stock Data Service - Lấy dữ liệu chứng khoán từ vnstock
-"""
+"""Stock Data Service - Lấy dữ liệu chứng khoán từ vnstock."""
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timedelta
 import pandas as pd
 from vnstock import Vnstock, Listing
-import logging
+from src.shared.logging import get_logger
+from src.shared.exceptions import ServiceUnavailableError, NotFoundError
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class StockDataService:
@@ -27,6 +26,9 @@ class StockDataService:
         
         Returns:
             List of stock symbols with basic info
+            
+        Raises:
+            ServiceUnavailableError: If unable to fetch symbols from data source
         """
         try:
             df = self.listing.all_symbols()
@@ -40,7 +42,7 @@ class StockDataService:
             return symbols
         except Exception as e:
             logger.error(f"Error getting symbols: {str(e)}")
-            return []
+            raise ServiceUnavailableError(f"Failed to fetch stock symbols: {str(e)}") from e
     
     def get_stock_quote(self, symbol: str, source: str = 'VCI') -> Dict[str, Any]:
         """
@@ -52,6 +54,10 @@ class StockDataService:
         
         Returns:
             Dict chứa thông tin giá hiện tại
+            
+        Raises:
+            NotFoundError: If symbol not found or no data available
+            ServiceUnavailableError: If unable to fetch data from source
         """
         try:
             stock = Vnstock().stock(symbol=symbol.upper(), source=source)
@@ -67,7 +73,7 @@ class StockDataService:
             )
             
             if df.empty:
-                return {}
+                raise NotFoundError(f"Không tìm thấy dữ liệu cho mã {symbol}")
             
             # Lấy dòng cuối cùng (ngày gần nhất)
             latest = df.iloc[-1]
@@ -85,9 +91,11 @@ class StockDataService:
                 'open': float(latest['open']),
                 'lastUpdated': latest.name.isoformat() if hasattr(latest.name, 'isoformat') else str(latest.name)
             }
+        except NotFoundError:
+            raise
         except Exception as e:
             logger.error(f"Error getting quote for {symbol}: {str(e)}")
-            return {}
+            raise ServiceUnavailableError(f"Failed to fetch stock quote for {symbol}: {str(e)}") from e
     
     def get_multiple_quotes(self, symbols: List[str], source: str = 'VCI') -> List[Dict[str, Any]]:
         """
@@ -128,10 +136,17 @@ class StockDataService:
         
         Returns:
             List of historical data points
+            
+        Raises:
+            NotFoundError: If symbol not found or no data available
+            ServiceUnavailableError: If unable to fetch data from source
         """
         try:
             stock = Vnstock().stock(symbol=symbol.upper(), source=source)
             df = stock.quote.history(start=start_date, end=end_date, interval=interval)
+            
+            if df.empty:
+                raise NotFoundError(f"Không tìm thấy dữ liệu lịch sử cho mã {symbol}")
             
             # Convert DataFrame to list of dicts
             data = df.reset_index().to_dict('records')
@@ -142,7 +157,9 @@ class StockDataService:
                     item['time'] = item['time'].isoformat()
             
             return data
+        except NotFoundError:
+            raise
         except Exception as e:
             logger.error(f"Error getting historical data for {symbol}: {str(e)}")
-            return []
+            raise ServiceUnavailableError(f"Failed to fetch historical data for {symbol}: {str(e)}") from e
 

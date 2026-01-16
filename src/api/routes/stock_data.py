@@ -1,18 +1,16 @@
-"""
-Stock Data API Routes
-"""
-from fastapi import APIRouter, HTTPException, Query
+"""Stock Data API routes."""
+from fastapi import APIRouter, Depends, Query
 from typing import List, Optional
 from pydantic import BaseModel
 from datetime import datetime, timedelta
-
-from ...application.services.stock_data_service import StockDataService
+from src.application.services.stock_data_service import StockDataService
+from src.api.dependencies import get_stock_data_service
 
 router = APIRouter(prefix="/api/stock", tags=["stock"])
-stock_service = StockDataService()
 
 
 class StockQuoteResponse(BaseModel):
+    """Response model for stock quote."""
     symbol: str
     currentPrice: float
     previousClose: float
@@ -26,6 +24,7 @@ class StockQuoteResponse(BaseModel):
 
 
 class SymbolInfo(BaseModel):
+    """Response model for symbol information."""
     symbol: str
     name: Optional[str] = None
     exchange: Optional[str] = None
@@ -33,6 +32,7 @@ class SymbolInfo(BaseModel):
 
 
 class HistoricalDataPoint(BaseModel):
+    """Response model for historical data point."""
     time: str
     open: float
     high: float
@@ -42,64 +42,78 @@ class HistoricalDataPoint(BaseModel):
 
 
 class SymbolsResponse(BaseModel):
+    """Response model for symbols list."""
     symbols: List[SymbolInfo]
 
 
 @router.get("/symbols", response_model=SymbolsResponse)
 async def get_all_symbols(
-    exchange: Optional[str] = Query(None, description="Sàn giao dịch: HOSE, HNX, UPCOM")
+    exchange: Optional[str] = Query(None, description="Sàn giao dịch: HOSE, HNX, UPCOM"),
+    stock_service: StockDataService = Depends(get_stock_data_service)
 ):
     """
-    Lấy danh sách tất cả mã chứng khoán
+    Lấy danh sách tất cả mã chứng khoán.
+
+    Args:
+        exchange: Exchange filter (optional)
+        stock_service: Stock data service instance
+
+    Returns:
+        List of stock symbols
     """
-    try:
-        symbols_data = stock_service.get_all_symbols(exchange)
-        symbols = [
-            SymbolInfo(
-                symbol=s.get('ticker', s.get('symbol', '')),
-                name=s.get('organ_name', s.get('company_name', s.get('name'))),
-                exchange=s.get('exchange', ''),
-                industry=s.get('icb_name3', s.get('industry'))
-            )
-            for s in symbols_data
-        ]
-        return SymbolsResponse(symbols=symbols)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    symbols_data = stock_service.get_all_symbols(exchange)
+    symbols = [
+        SymbolInfo(
+            symbol=s.get('ticker', s.get('symbol', '')),
+            name=s.get('organ_name', s.get('company_name', s.get('name'))),
+            exchange=s.get('exchange', ''),
+            industry=s.get('icb_name3', s.get('industry'))
+        )
+        for s in symbols_data
+    ]
+    return SymbolsResponse(symbols=symbols)
 
 
 @router.get("/quote/{symbol}", response_model=StockQuoteResponse)
 async def get_stock_quote(
     symbol: str,
-    source: str = Query("VCI", description="Nguồn dữ liệu: VCI, TCBS")
+    source: str = Query("VCI", description="Nguồn dữ liệu: VCI, TCBS"),
+    stock_service: StockDataService = Depends(get_stock_data_service)
 ):
     """
-    Lấy giá hiện tại của một mã chứng khoán
+    Lấy giá hiện tại của một mã chứng khoán.
+
+    Args:
+        symbol: Stock symbol
+        source: Data source
+        stock_service: Stock data service instance
+
+    Returns:
+        Stock quote information
     """
-    try:
-        quote = stock_service.get_stock_quote(symbol, source)
-        if not quote:
-            raise HTTPException(status_code=404, detail=f"Không tìm thấy dữ liệu cho mã {symbol}")
-        return quote
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    quote = stock_service.get_stock_quote(symbol, source)
+    return quote
 
 
 @router.post("/quotes", response_model=List[StockQuoteResponse])
 async def get_multiple_quotes(
     symbols: List[str],
-    source: str = Query("VCI", description="Nguồn dữ liệu: VCI, TCBS")
+    source: str = Query("VCI", description="Nguồn dữ liệu: VCI, TCBS"),
+    stock_service: StockDataService = Depends(get_stock_data_service)
 ):
     """
-    Lấy giá của nhiều mã chứng khoán cùng lúc
+    Lấy giá của nhiều mã chứng khoán cùng lúc.
+
+    Args:
+        symbols: List of stock symbols
+        source: Data source
+        stock_service: Stock data service instance
+
+    Returns:
+        List of stock quotes
     """
-    try:
-        quotes = stock_service.get_multiple_quotes(symbols, source)
-        return quotes
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    quotes = stock_service.get_multiple_quotes(symbols, source)
+    return quotes
 
 
 @router.get("/history/{symbol}", response_model=List[HistoricalDataPoint])
@@ -108,41 +122,56 @@ async def get_historical_data(
     start_date: Optional[str] = Query(None, description="Ngày bắt đầu (YYYY-MM-DD)"),
     end_date: Optional[str] = Query(None, description="Ngày kết thúc (YYYY-MM-DD)"),
     interval: str = Query("1D", description="Khoảng thời gian: 1D, 1W, 1M"),
-    source: str = Query("VCI", description="Nguồn dữ liệu: VCI, TCBS")
+    source: str = Query("VCI", description="Nguồn dữ liệu: VCI, TCBS"),
+    stock_service: StockDataService = Depends(get_stock_data_service)
 ):
     """
-    Lấy dữ liệu lịch sử của mã chứng khoán
+    Lấy dữ liệu lịch sử của mã chứng khoán.
+
+    Args:
+        symbol: Stock symbol
+        start_date: Start date
+        end_date: End date
+        interval: Time interval
+        source: Data source
+        stock_service: Stock data service instance
+
+    Returns:
+        List of historical data points
     """
-    try:
-        # Nếu không có start_date, lấy 30 ngày gần nhất
-        if not start_date:
-            start = datetime.now() - timedelta(days=30)
-            start_date = start.strftime('%Y-%m-%d')
-        
-        if not end_date:
-            end_date = datetime.now().strftime('%Y-%m-%d')
-        
-        data = stock_service.get_historical_data(symbol, start_date, end_date, interval, source)
-        return data
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    # Nếu không có start_date, lấy 30 ngày gần nhất
+    if not start_date:
+        start = datetime.now() - timedelta(days=30)
+        start_date = start.strftime('%Y-%m-%d')
+    
+    if not end_date:
+        end_date = datetime.now().strftime('%Y-%m-%d')
+    
+    data = stock_service.get_historical_data(symbol, start_date, end_date, interval, source)
+    return data
 
 
 @router.get("/vn30")
-async def get_vn30_quotes(source: str = Query("VCI", description="Nguồn dữ liệu: VCI, TCBS")):
+async def get_vn30_quotes(
+    source: str = Query("VCI", description="Nguồn dữ liệu: VCI, TCBS"),
+    stock_service: StockDataService = Depends(get_stock_data_service)
+):
     """
-    Lấy giá của các mã VN30
-    """
-    try:
-        # Danh sách mã VN30 (có thể cập nhật định kỳ)
-        vn30_symbols = [
-            'VIC', 'VNM', 'VCB', 'VRE', 'VHM', 'GAS', 'MSN', 'BID', 'CTG', 'HPG',
-            'TCB', 'MBB', 'VPB', 'PLX', 'SAB', 'VJC', 'GVR', 'FPT', 'POW', 'SSI',
-            'MWG', 'HDB', 'ACB', 'TPB', 'STB', 'PDR', 'VIB', 'BCM', 'KDH', 'NVL'
-        ]
-        
-        quotes = stock_service.get_multiple_quotes(vn30_symbols, source)
-        return quotes
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    Lấy giá của các mã VN30.
 
+    Args:
+        source: Data source
+        stock_service: Stock data service instance
+
+    Returns:
+        List of VN30 stock quotes
+    """
+    # Danh sách mã VN30 (có thể cập nhật định kỳ)
+    vn30_symbols = [
+        'VIC', 'VNM', 'VCB', 'VRE', 'VHM', 'GAS', 'MSN', 'BID', 'CTG', 'HPG',
+        'TCB', 'MBB', 'VPB', 'PLX', 'SAB', 'VJC', 'GVR', 'FPT', 'POW', 'SSI',
+        'MWG', 'HDB', 'ACB', 'TPB', 'STB', 'PDR', 'VIB', 'BCM', 'KDH', 'NVL'
+    ]
+    
+    quotes = stock_service.get_multiple_quotes(vn30_symbols, source)
+    return quotes

@@ -15,7 +15,7 @@ This project follows Clean Architecture principles with the following layers:
 ## Prerequisites
 
 - Python 3.11+
-- Google Gemini API Key
+- Blackbox API Key
 - Qdrant (Vector Database)
 
 ## Setup
@@ -33,7 +33,7 @@ This project follows Clean Architecture principles with the following layers:
 
 3. Create `.env` file:
    ```
-   GEMINI_API_KEY=your_gemini_api_key
+   BLACKBOX_API_KEY=yourkey
    QDRANT_URL=http://localhost:6333
    RABBITMQ_CONNECTION_STRING=amqp://guest:guest@localhost:5672/
    ```
