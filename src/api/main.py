@@ -218,7 +218,7 @@ app.include_router(alert_nlp.router, prefix="/api", tags=["alert-nlp"])
 app.include_router(stock_data.router, tags=["stock"])
 app.include_router(insights.router, prefix="/api", tags=["insights"])
 app.include_router(answer_context.router, prefix="/api/ai", tags=["answer"]) # V1 Analysis Reports Q&A
-app.include_router(rag.router, prefix="/api/rag", tags=["rag"]) # RAG ingestion
+app.include_router(rag.router, prefix="/api", tags=["rag"]) # RAG ingestion
 
 
 @app.get("/")

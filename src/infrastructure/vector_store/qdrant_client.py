@@ -1,8 +1,15 @@
 """Qdrant vector store client implementation."""
 from typing import List, Dict, Any, Optional
 from qdrant_client import QdrantClient as Qdrant
-from qdrant_client.models import Distance, VectorParams, Filter, FieldCondition, MatchValue
 from qdrant_client.http.exceptions import UnexpectedResponse
+from qdrant_client.http.models import (
+    Distance,
+    VectorParams,
+    Filter,
+    FieldCondition,
+    MatchValue,
+    PointStruct
+)
 from src.domain.interfaces.vector_store import VectorStore
 from src.domain.interfaces.embedding_provider import EmbeddingProvider
 from src.shared.config import get_settings
@@ -129,23 +136,7 @@ class QdrantClient(VectorStore):
             VectorStoreError: If upsert operation fails
         """
         try:
-            # Check if collection exists, create if not
-            try:
-                self.client.get_collection(self.collection_name)
-            except UnexpectedResponse:
-                # Collection doesn't exist, create it
-                settings = get_settings()
-                dimension = settings.embedding_dimension or DEFAULT_EMBEDDING_DIMENSION
-                
-                logger.info(f"Creating collection {self.collection_name} with dimension {dimension}")
-                self.client.create_collection(
-                    collection_name=self.collection_name,
-                    vectors_config=VectorParams(
-                        size=dimension,
-                        distance=Distance.COSINE
-                    )
-                )
-                logger.info(f"Collection {self.collection_name} created successfully")
+            await self.ensure_collection()
             
             # Upsert vectors
             self.client.upsert(
@@ -156,3 +147,95 @@ class QdrantClient(VectorStore):
         except Exception as e:
             logger.error(f"Error upserting vectors to Qdrant: {str(e)}")
             raise VectorStoreError(f"Upsert operation failed: {str(e)}") from e
+
+    async def ensure_collection(self, vector_size: Optional[int] = None) -> None:
+        """Ensure collection exists with correct vector size."""
+        try:
+            self.client.get_collection(self.collection_name)
+            return
+        except UnexpectedResponse:
+            settings = get_settings()
+            dimension = vector_size or settings.embedding_dimension or DEFAULT_EMBEDDING_DIMENSION
+            logger.info(f"Creating collection {self.collection_name} with dimension {dimension}")
+            self.client.create_collection(
+                collection_name=self.collection_name,
+                vectors_config=VectorParams(
+                    size=dimension,
+                    distance=Distance.COSINE
+                )
+            )
+            logger.info(f"Collection {self.collection_name} created successfully")
+        except Exception as e:
+            logger.error(f"Error ensuring collection {self.collection_name}: {str(e)}")
+            raise VectorStoreError(f"Ensure collection failed: {str(e)}") from e
+
+    async def upsert_chunks(
+        self,
+        document_id: str,
+        source: str,
+        payloads: List[Dict[str, Any]],
+        vectors: List[List[float]]
+    ) -> None:
+        """Upsert chunk payloads + vectors into the collection."""
+        try:
+            if not vectors:
+                logger.info(f"No vectors to upsert for document {document_id}")
+                return
+
+            await self.ensure_collection(vector_size=len(vectors[0]))
+
+            points: List[PointStruct] = []
+            for payload, vector in zip(payloads, vectors):
+                point_id = payload.get("chunkId")
+                points.append(
+                    PointStruct(
+                        id=point_id,
+                        vector=vector,
+                        payload=payload
+                    )
+                )
+
+            self.client.upsert(
+                collection_name=self.collection_name,
+                points=points
+            )
+            logger.debug(
+                f"Upserted {len(points)} chunks for document {document_id} to {self.collection_name}"
+            )
+        except Exception as e:
+            logger.error(f"Error upserting chunks to Qdrant: {str(e)}")
+            raise VectorStoreError(f"Upsert chunks failed: {str(e)}") from e
+
+    async def delete_document(self, document_id: str) -> int:
+        """Delete all points for a documentId, return deleted count."""
+        try:
+            query_filter = Filter(
+                must=[
+                    FieldCondition(
+                        key="documentId",
+                        match=MatchValue(value=document_id)
+                    )
+                ]
+            )
+
+            count_result = self.client.count(
+                collection_name=self.collection_name,
+                count_filter=query_filter,
+                exact=True
+            )
+            deleted_count = int(getattr(count_result, "count", 0) or 0)
+
+            self.client.delete(
+                collection_name=self.collection_name,
+                points_selector=query_filter
+            )
+            logger.debug(
+                f"Deleted {deleted_count} points for document {document_id} from {self.collection_name}"
+            )
+            return deleted_count
+        except UnexpectedResponse as e:
+            logger.warning(f"Collection {self.collection_name} does not exist: {str(e)}")
+            return 0
+        except Exception as e:
+            logger.error(f"Error deleting document from Qdrant: {str(e)}")
+            raise VectorStoreError(f"Delete document failed: {str(e)}") from e

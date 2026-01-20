@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
     
     # API Configuration
-    blackbox_api_key: str = Field(..., env="BLACKBOX_API_KEY")
+    blackbox_api_key: Optional[str] = Field(default=None, env="BLACKBOX_API_KEY")
     api_title: str = Field(default="Stock Investment AI Service", env="API_TITLE")
     api_version: str = Field(default="1.0.0", env="API_VERSION")
     

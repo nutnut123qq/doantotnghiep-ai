@@ -17,8 +17,10 @@ class IngestRequest(BaseModel):
     """Request model for document ingestion."""
     document_id: str = Field(..., description="Unique document identifier (string)")
     source: str = Field(..., description="Source type (e.g., 'analysis_report')")
-    text: str = Field(..., min_length=1, description="Full document text")
+    text: str = Field(..., description="Full document text")
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Document metadata")
+    chunk_size: Optional[int] = Field(default=None, description="Chunk size (characters)")
+    chunk_overlap: Optional[int] = Field(default=None, description="Chunk overlap (characters)")
 
 
 class IngestResponse(BaseModel):
@@ -26,7 +28,7 @@ class IngestResponse(BaseModel):
     chunksUpserted: int = Field(..., description="Number of chunks upserted")
     documentId: str = Field(..., description="Document identifier")
     collection: str = Field(..., description="Vector store collection name")
-    embeddingModel: str = Field(..., description="Embedding model used")
+    status: str = Field(..., description="Status string")
 
 
 def validate_api_key(x_internal_api_key: Optional[str] = Header(None)):
@@ -49,11 +51,8 @@ def validate_api_key(x_internal_api_key: Optional[str] = Header(None)):
     
     # Validate
     if not expected_key:
-        logger.error("INTERNAL_API_KEY not configured in environment")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Internal API key not configured"
-        )
+        logger.warning("INTERNAL_API_KEY not configured; skipping validation")
+        return True
     
     if not x_internal_api_key:
         logger.warning("RAG ingest request missing X-Internal-Api-Key header")
@@ -73,7 +72,7 @@ def validate_api_key(x_internal_api_key: Optional[str] = Header(None)):
     return True
 
 
-@router.post("/ingest", response_model=IngestResponse)
+@router.post("/rag/ingest", response_model=IngestResponse)
 async def ingest_document(
     request: IngestRequest,
     service: RagIngestService = Depends(get_rag_ingest_service),
@@ -83,7 +82,7 @@ async def ingest_document(
     Ingest a document into RAG vector store.
     
     This endpoint:
-    1. Chunks the document text (heading-first, then fixed-size with overlap)
+    1. Chunks the document text (paragraph-friendly, fixed-size with overlap)
     2. Generates embeddings for each chunk
     3. Upserts to Qdrant with deterministic point IDs and metadata
     
@@ -107,7 +106,9 @@ async def ingest_document(
             document_id=request.document_id,
             source=request.source,
             text=request.text,
-            metadata=request.metadata
+            metadata=request.metadata,
+            chunk_size=request.chunk_size,
+            chunk_overlap=request.chunk_overlap
         )
         
         logger.info(
@@ -119,7 +120,7 @@ async def ingest_document(
             chunksUpserted=result["chunksUpserted"],
             documentId=result["documentId"],
             collection=result["collection"],
-            embeddingModel=result["embeddingModel"]
+            status=result["status"]
         )
     
     except Exception as e:
@@ -127,4 +128,22 @@ async def ingest_document(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to ingest document: {str(e)}"
+        )
+
+
+@router.delete("/rag/doc/{document_id}")
+async def delete_document(
+    document_id: str,
+    service: RagIngestService = Depends(get_rag_ingest_service),
+    _api_key_valid: bool = Depends(validate_api_key)
+):
+    """Delete all chunks for a document in vector store."""
+    try:
+        result = await service.delete_document(document_id)
+        return result
+    except Exception as e:
+        logger.error(f"Error deleting document {document_id}: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to delete document: {str(e)}"
         )

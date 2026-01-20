@@ -1,25 +1,15 @@
 """RAG ingest service for chunking and embedding documents into Qdrant."""
 import re
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List, Optional
 from src.domain.interfaces.vector_store import VectorStore
 from src.domain.interfaces.embedding_provider import EmbeddingProvider
 from src.shared.logging import get_logger
 
 logger = get_logger(__name__)
 
-# Chunking constants
-CHUNK_SIZE_CHARS = 1500
-OVERLAP_CHARS = 200
-MIN_CHUNK_SIZE = 1200
-MAX_CHUNK_SIZE = 1800
-
-# Heading detection patterns (priority order)
-HEADING_PATTERNS = [
-    (r'^(SECTION:|Section:)\s+(.+)$', 'SECTION'),  # Highest priority
-    (r'^(#{1,6})\s+(.+)$', 'MARKDOWN'),
-    (r'^(\d+(?:\.\d+)*)\s+(.+)$', 'NUMBERED'),
-    (r'^([IVXLCDM]+)\.\s+(.+)$', 'ROMAN'),
-]
+# Chunking defaults (character-based)
+DEFAULT_CHUNK_SIZE = 1200
+DEFAULT_CHUNK_OVERLAP = 200
 
 
 class RagIngestService:
@@ -46,7 +36,9 @@ class RagIngestService:
         document_id: str,
         source: str,
         text: str,
-        metadata: Dict[str, Any]
+        metadata: Dict[str, Any],
+        chunk_size: Optional[int] = None,
+        chunk_overlap: Optional[int] = None
     ) -> Dict[str, Any]:
         """
         Ingest a document by chunking, embedding, and upserting to vector store.
@@ -62,171 +54,132 @@ class RagIngestService:
         """
         logger.info(f"Starting ingest for document {document_id}, source={source}")
         
-        # Extract metadata fields (handle both camelCase and snake_case)
-        symbol = metadata.get("symbol")
-        title = metadata.get("title")
-        source_url = metadata.get("sourceUrl") or metadata.get("source_url")
-        
-        # Split into sections based on headings
-        sections = self._split_into_sections(text)
-        logger.debug(f"Split document into {len(sections)} sections")
-        
-        # Chunk each section
-        all_chunks = []
-        for section_idx, (section_title, section_text) in enumerate(sections):
-            chunks = self._chunk_section(section_text)
-            for chunk_idx, chunk_text in enumerate(chunks):
-                all_chunks.append({
-                    "section_idx": section_idx,
-                    "chunk_idx": chunk_idx,
-                    "section_title": section_title,
-                    "text": chunk_text
-                })
-        
-        logger.info(f"Created {len(all_chunks)} chunks for document {document_id}")
-        
-        # Embed and upsert each chunk
-        points = []
-        for chunk_data in all_chunks:
-            # Generate embedding
-            embedding = await self.embedding_provider.generate_embedding(chunk_data["text"])
-            
-            # Create deterministic point ID
-            point_id = f"{document_id}:{chunk_data['section_idx']}:{chunk_data['chunk_idx']}"
-            
-            # Build payload (camelCase keys)
-            payload = {
-                "text": chunk_data["text"],
-                "source": source,
+        if not text or not text.strip():
+            logger.warning(f"Empty text for document {document_id}, skipping ingestion")
+            return {
+                "chunksUpserted": 0,
                 "documentId": document_id,
-                "symbol": symbol,
-                "section": chunk_data["section_title"],
-                "title": title,
-                "sourceUrl": source_url
+                "collection": getattr(self.vector_store, "collection_name", "stock_documents"),
+                "status": "ok"
             }
-            
-            points.append({
-                "id": point_id,
-                "vector": embedding,
-                "payload": payload
+
+        # Extract metadata fields (handle both camelCase and snake_case)
+        symbol = (metadata.get("symbol") or "").strip()
+        title = (metadata.get("title") or "Unknown").strip()
+        source_url = metadata.get("sourceUrl") or metadata.get("source_url")
+        section = (metadata.get("section") or "").strip()
+
+        # Resolve chunking params
+        resolved_chunk_size = chunk_size or DEFAULT_CHUNK_SIZE
+        resolved_chunk_overlap = chunk_overlap if chunk_overlap is not None else DEFAULT_CHUNK_OVERLAP
+        if resolved_chunk_size <= 0:
+            resolved_chunk_size = DEFAULT_CHUNK_SIZE
+        if resolved_chunk_overlap < 0:
+            resolved_chunk_overlap = 0
+        if resolved_chunk_overlap >= resolved_chunk_size:
+            resolved_chunk_overlap = max(0, resolved_chunk_size - 1)
+
+        chunks = self._chunk_text(text, resolved_chunk_size, resolved_chunk_overlap)
+        logger.info(f"Created {len(chunks)} chunks for document {document_id}")
+
+        payloads: List[Dict[str, Any]] = []
+        vectors: List[List[float]] = []
+
+        for chunk_index, chunk_text in enumerate(chunks):
+            embedding = await self.embedding_provider.generate_embedding(chunk_text)
+            chunk_id = f"{document_id}:{chunk_index}"
+            payloads.append({
+                "documentId": document_id,
+                "source": source,
+                "sourceUrl": source_url,
+                "title": title,
+                "section": section,
+                "symbol": symbol,
+                "chunkId": chunk_id,
+                "text": chunk_text
             })
-        
-        # Upsert to vector store
-        await self.vector_store.upsert(points)
-        
-        logger.info(f"Successfully upserted {len(points)} chunks for document {document_id}")
-        
-        # Get collection name and embedding model from settings
-        collection_name = getattr(self.vector_store, 'collection_name', 'stock_documents')
-        embedding_model = getattr(
-            self.embedding_provider,
-            'model_name',
-            'all-MiniLM-L6-v2'
+            vectors.append(embedding)
+
+        await self.vector_store.upsert_chunks(
+            document_id=document_id,
+            source=source,
+            payloads=payloads,
+            vectors=vectors
         )
+
+        logger.info(f"Successfully upserted {len(payloads)} chunks for document {document_id}")
         
+        collection_name = getattr(self.vector_store, "collection_name", "stock_documents")
         return {
-            "chunksUpserted": len(points),
+            "chunksUpserted": len(payloads),
             "documentId": document_id,
             "collection": collection_name,
-            "embeddingModel": embedding_model
+            "status": "ok"
         }
-    
-    def _split_into_sections(self, text: str) -> List[Tuple[str, str]]:
-        """
-        Split text into sections based on heading patterns.
-        
-        Args:
-            text: Full document text
-            
-        Returns:
-            List of (section_title, section_text) tuples
-        """
-        lines = text.split('\n')
-        sections = []
-        current_section_title = "Introduction"
-        current_section_lines = []
-        
-        for line in lines:
-            # Check if line matches any heading pattern (in priority order)
-            is_heading = False
-            for pattern, pattern_type in HEADING_PATTERNS:
-                match = re.match(pattern, line.strip())
-                if match:
-                    # Save previous section if has content
-                    if current_section_lines:
-                        section_text = '\n'.join(current_section_lines).strip()
-                        if section_text:
-                            sections.append((current_section_title, section_text))
-                    
-                    # Start new section
-                    current_section_title = line.strip()
-                    current_section_lines = []
-                    is_heading = True
-                    break
-            
-            if not is_heading:
-                current_section_lines.append(line)
-        
-        # Add final section
-        if current_section_lines:
-            section_text = '\n'.join(current_section_lines).strip()
-            if section_text:
-                sections.append((current_section_title, section_text))
-        
-        # If no sections found (no headings), return entire text as one section
-        if not sections:
-            sections.append(("Content", text))
-        
-        return sections
-    
-    def _chunk_section(self, text: str) -> List[str]:
-        """
-        Chunk section text into overlapping chunks.
-        
-        Args:
-            text: Section text
-            
-        Returns:
-            List of chunk texts
-        """
-        # If section is smaller than max chunk size, return as single chunk
-        if len(text) <= MAX_CHUNK_SIZE:
-            return [text]
-        
-        chunks = []
-        start = 0
-        
-        while start < len(text):
-            # Calculate end position (clamp to min/max)
-            end = start + CHUNK_SIZE_CHARS
-            
-            # If this is not the last chunk, try to break at sentence/word boundary
-            if end < len(text):
-                # Look for sentence end (., !, ?) within last 20% of chunk
-                search_start = end - int(CHUNK_SIZE_CHARS * 0.2)
-                sentence_end = max(
-                    text.rfind('. ', search_start, end),
-                    text.rfind('! ', search_start, end),
-                    text.rfind('? ', search_start, end)
-                )
-                if sentence_end > search_start:
-                    end = sentence_end + 1
+
+    async def delete_document(self, document_id: str) -> Dict[str, Any]:
+        """Delete a document and return status with deleted count."""
+        deleted = await self.vector_store.delete_document(document_id)
+        return {
+            "documentId": document_id,
+            "deleted": deleted,
+            "status": "ok"
+        }
+
+    def _chunk_text(self, text: str, chunk_size: int, chunk_overlap: int) -> List[str]:
+        """Chunk text with paragraph preference, fallback to fixed size."""
+        normalized = re.sub(r"\r\n", "\n", text).strip()
+        if not normalized:
+            return []
+
+        paragraphs = [p.strip() for p in re.split(r"\n\s*\n", normalized) if p.strip()]
+        if not paragraphs:
+            return []
+
+        chunks: List[str] = []
+        current = ""
+
+        for paragraph in paragraphs:
+            candidate = f"{current}\n\n{paragraph}" if current else paragraph
+            if len(candidate) <= chunk_size:
+                current = candidate
+                continue
+
+            if current:
+                chunks.append(current)
+                if chunk_overlap > 0:
+                    overlap_text = current[-chunk_overlap:]
+                    current = f"{overlap_text}\n\n{paragraph}"
                 else:
-                    # Try word boundary
-                    space_pos = text.rfind(' ', search_start, end)
-                    if space_pos > search_start:
-                        end = space_pos
-            
-            # Extract chunk
+                    current = paragraph
+            else:
+                current = paragraph
+
+            if len(current) > chunk_size:
+                chunks.extend(self._hard_split(current, chunk_size, chunk_overlap))
+                current = ""
+
+        if current:
+            chunks.append(current)
+
+        return [chunk.strip() for chunk in chunks if chunk.strip()]
+
+    def _hard_split(self, text: str, chunk_size: int, chunk_overlap: int) -> List[str]:
+        """Split long text into fixed-size overlapping chunks."""
+        chunks: List[str] = []
+        start = 0
+        text_len = len(text)
+
+        while start < text_len:
+            end = min(start + chunk_size, text_len)
             chunk = text[start:end].strip()
             if chunk:
                 chunks.append(chunk)
-            
-            # Move start position with overlap
-            start = end - OVERLAP_CHARS
-            
-            # Ensure we make progress
-            if start <= chunks[-1] if chunks else 0:
-                start = end
-        
+            if end >= text_len:
+                break
+            next_start = end - chunk_overlap
+            if next_start <= start:
+                next_start = end
+            start = next_start
+
         return chunks
