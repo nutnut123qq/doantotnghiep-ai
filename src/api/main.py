@@ -3,7 +3,7 @@ import time
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from src.api.routes import summarize, analyze, forecast, qa, alert_nlp, stock_data, insights
+from src.api.routes import summarize, analyze, forecast, qa, alert_nlp, stock_data, insights, answer_context, rag
 from src.shared.config import get_settings
 from src.shared.exceptions import (
     AIServiceException,
@@ -217,6 +217,8 @@ app.include_router(qa.router, prefix="/api", tags=["qa"])
 app.include_router(alert_nlp.router, prefix="/api", tags=["alert-nlp"])
 app.include_router(stock_data.router, tags=["stock"])
 app.include_router(insights.router, prefix="/api", tags=["insights"])
+app.include_router(answer_context.router, prefix="/api/ai", tags=["answer"]) # V1 Analysis Reports Q&A
+app.include_router(rag.router, prefix="/api/rag", tags=["rag"]) # RAG ingestion
 
 
 @app.get("/")

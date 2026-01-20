@@ -1,5 +1,5 @@
 """QA service for answering questions with RAG."""
-from typing import Dict, Any
+from typing import Dict, Any, Optional, List
 from src.domain.interfaces.llm_provider import LLMProvider
 from src.domain.interfaces.vector_store import VectorStore
 from src.domain.interfaces.embedding_provider import EmbeddingProvider
@@ -30,66 +30,124 @@ class QAService:
         self.embedding_service = embedding_service
         logger.info("Initialized QAService")
 
-    async def answer_question(self, question: str, context: str) -> Dict[str, Any]:
+    async def answer_question(
+        self,
+        question: str,
+        base_context: Optional[str] = None,
+        top_k: int = 6,
+        document_id: Optional[str] = None,
+        source: Optional[str] = None,
+        symbol: Optional[str] = None
+    ) -> Dict[str, Any]:
         """
-        Answer a question using RAG with context.
+        Answer a question using RAG with optional filters.
         
         Args:
             question: The question to answer
-            context: Additional context to include
+            base_context: Base context from caller (optional)
+            top_k: Number of chunks to retrieve
+            document_id: Filter by document ID (for report-specific Q&A)
+            source: Filter by source type
+            symbol: Filter by symbol
             
         Returns:
-            Dictionary with answer and sources
+            Dictionary with answer and sources (list of objects)
         """
-        logger.info(f"Answering question: {question[:100]}...")
+        logger.info(
+            f"Answering question: {question[:100]}... "
+            f"(filters: documentId={document_id}, source={source}, symbol={symbol})"
+        )
         
+        # Build filters for vector search
+        filters = {
+            "document_id": document_id,
+            "source": source,
+            "symbol": symbol
+        }
+        filters = {key: value for key, value in filters.items() if value is not None}
+
+        # Search for relevant chunks with filters (fallback to empty on failure)
+        sources_raw: List[Dict[str, Any]] = []
         try:
-            # Generate embedding for the question
-            question_embedding = await self.embedding_service.generate_embedding(question)
-            logger.debug("Generated question embedding")
-
-            # Search for relevant context in vector database
-            relevant_docs = await self.vector_store.search(question_embedding, limit=3)
-            logger.debug(f"Found {len(relevant_docs)} relevant documents")
-
-            # Combine context with retrieved documents
-            full_context = context
-            if relevant_docs:
-                full_context += "\n\nThông tin liên quan:\n" + "\n".join([
-                    doc.get("text", "") for doc in relevant_docs
-                ])
-
-            # Enhanced prompt for financial reports with Vietnamese support
-            prompt = f"""Bạn là một chuyên gia phân tích tài chính. Dựa trên dữ liệu báo cáo tài chính được cung cấp, hãy trả lời câu hỏi một cách chi tiết và chính xác.
-
-Hướng dẫn:
-- Trả lời bằng tiếng Việt
-- Trích dẫn số liệu cụ thể từ báo cáo
-- Giải thích các chỉ số tài chính nếu cần
-- Đưa ra phân tích và đánh giá nếu phù hợp
-- Nếu không có đủ thông tin, hãy nói rõ
-
-Dữ liệu báo cáo tài chính:
-{full_context}
-
-Câu hỏi: {question}
-
-Trả lời:"""
-
-            answer = await self.llm_provider.generate(prompt)
-            logger.info("Successfully generated answer")
-
-            sources = [
-                doc.get("source", "") for doc in relevant_docs if doc.get("source")
-            ]
-
-            return {
-                "answer": answer,
-                "sources": sources
-            }
+            sources_raw = await self.vector_store.search(
+                query_text=question,
+                top_k=top_k,
+                filters=filters or None
+            )
+            logger.debug(f"Retrieved {len(sources_raw)} relevant chunks")
         except Exception as e:
-            logger.error(f"Error answering question: {str(e)}")
-            raise
+            logger.warning(f"Vector store unavailable, fallback to base context only: {str(e)}")
+            sources_raw = []
+
+        # Normalize sources with safe fallbacks and request values
+        sources_sorted = sorted(
+            sources_raw,
+            key=lambda item: float(item.get("score", 0.0)),
+            reverse=True
+        )[:top_k]
+
+        sources: List[Dict[str, Any]] = []
+        for hit in sources_sorted:
+            text = (hit.get("text") or "").strip()
+            text_preview = text[:350] if len(text) > 350 else text
+            source_obj = {
+                "documentId": hit.get("documentId") or document_id or "",
+                "source": hit.get("source") or source or "",
+                "sourceUrl": hit.get("sourceUrl") if hit.get("sourceUrl") else None,
+                "title": hit.get("title") or "Unknown",
+                "section": hit.get("section") or "",
+                "symbol": hit.get("symbol") or symbol or "",
+                "chunkId": hit.get("chunkId") or "",
+                "score": float(hit.get("score") or 0.0),
+                "textPreview": text_preview,
+                "text": text
+            }
+            sources.append(source_obj)
+
+        # Build prompt with base context + retrieved chunks
+        prompt_parts = [
+            "Bạn là trợ lý phân tích tài chính.",
+            "Yêu cầu: trả lời ngắn gọn, bằng tiếng Việt.",
+            "Chỉ sử dụng thông tin trong ngữ cảnh cung cấp, không bịa nguồn.",
+            "Nếu không đủ thông tin, hãy nói rõ.",
+            ""
+        ]
+
+        if base_context:
+            prompt_parts.append("Ngữ cảnh cơ bản:")
+            prompt_parts.append(base_context)
+            prompt_parts.append("")
+
+        if sources:
+            prompt_parts.append("Ngữ cảnh từ tài liệu:")
+            for idx, source_obj in enumerate(sources, 1):
+                title = source_obj.get("title") or "Unknown"
+                section = source_obj.get("section") or "N/A"
+                source_url = source_obj.get("sourceUrl") or "null"
+                prompt_parts.append(f"[{idx}] {title} - {section} ({source_url})")
+                prompt_parts.append(source_obj.get("text") or source_obj.get("textPreview") or "")
+                prompt_parts.append("")
+
+        prompt_parts.append(f"Câu hỏi: {question}")
+        prompt_parts.append("")
+        prompt_parts.append("Trả lời:")
+
+        prompt = "\n".join(prompt_parts)
+
+        # Generate answer
+        answer = await self.llm_provider.generate(prompt)
+        logger.info("Successfully generated answer")
+
+        # Strip internal text field before returning
+        response_sources = []
+        for source_obj in sources:
+            trimmed_obj = {key: value for key, value in source_obj.items() if key != "text"}
+            response_sources.append(trimmed_obj)
+
+        return {
+            "answer": answer,
+            "sources": response_sources
+        }
 
     async def analyze_financial_metrics(self, financial_data: Dict[str, Any]) -> Dict[str, Any]:
         """

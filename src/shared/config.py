@@ -58,6 +58,12 @@ class Settings(BaseSettings):
         env="LOG_FORMAT"
     )  # json or text
     
+    # Internal API Key for RAG endpoints
+    internal_api_key: Optional[str] = Field(
+        default=None,
+        env="INTERNAL_API_KEY"
+    )
+    
     @field_validator("cors_origins", mode="before")
     @classmethod
     def parse_cors_origins(cls, v):

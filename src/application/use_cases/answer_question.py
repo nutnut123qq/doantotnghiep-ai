@@ -18,16 +18,16 @@ class AnswerQuestionUseCase:
         self.qa_service = qa_service
         logger.info("Initialized AnswerQuestionUseCase")
 
-    async def execute(self, question: str, context: str) -> dict:
+    async def execute(self, question: str, base_context: str) -> dict:
         """
         Execute question answering use case.
         
         Args:
             question: The question to answer
-            context: Additional context
+            base_context: Additional context
             
         Returns:
             Answer dictionary
         """
         logger.info(f"Executing question answering: {question[:100]}...")
-        return await self.qa_service.answer_question(question, context)
+        return await self.qa_service.answer_question(question, base_context)

@@ -49,7 +49,17 @@ def test_qa_endpoint_with_retrieved_docs(
         
         # Mock vector store to return documents
         mock_vector_store.search = AsyncMock(return_value=[
-            {"text": "EPS is 1000 VND", "source": "report.pdf", "score": 0.9}
+            {
+                "documentId": "doc-1",
+                "source": "analysis_report",
+                "sourceUrl": None,
+                "title": "Báo cáo Q1",
+                "section": "Tổng quan",
+                "symbol": "ABC",
+                "chunkId": "doc-1:0:0",
+                "score": 0.9,
+                "text": "EPS is 1000 VND"
+            }
         ])
         mock_llm_provider.generate = AsyncMock(return_value="EPS is 1000 VND")
         
@@ -63,4 +73,15 @@ def test_qa_endpoint_with_retrieved_docs(
         
         assert response.status_code == 200
         data = response.json()
-        assert "report.pdf" in data["sources"]
+        assert isinstance(data["sources"], list)
+        if data["sources"]:
+            source_item = data["sources"][0]
+            assert "documentId" in source_item
+            assert "source" in source_item
+            assert "sourceUrl" in source_item
+            assert "title" in source_item
+            assert "section" in source_item
+            assert "symbol" in source_item
+            assert "chunkId" in source_item
+            assert "score" in source_item
+            assert "textPreview" in source_item

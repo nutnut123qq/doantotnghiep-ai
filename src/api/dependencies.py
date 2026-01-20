@@ -10,6 +10,7 @@ from src.application.services.summarization_service import SummarizationService
 from src.application.services.sentiment_service import SentimentService
 from src.application.services.nlp_parser_service import NLPParserService
 from src.application.services.stock_data_service import StockDataService
+from src.application.services.rag_ingest_service import RagIngestService
 from src.application.use_cases.summarize_news import SummarizeNewsUseCase
 from src.application.use_cases.answer_question import AnswerQuestionUseCase
 from src.application.use_cases.generate_forecast import GenerateForecastUseCase
@@ -33,7 +34,7 @@ def get_llm_provider() -> BlackboxClient:
 def get_vector_store() -> QdrantClient:
     """Get vector store singleton."""
     logger.debug("Creating vector store instance")
-    return QdrantClient()
+    return QdrantClient(get_embedding_service())
 
 
 @lru_cache()
@@ -81,6 +82,14 @@ def get_nlp_parser_service() -> NLPParserService:
 def get_stock_data_service() -> StockDataService:
     """Get stock data service instance."""
     return StockDataService()
+
+
+def get_rag_ingest_service() -> RagIngestService:
+    """Get RAG ingest service instance."""
+    return RagIngestService(
+        get_vector_store(),
+        get_embedding_service()
+    )
 
 
 # Use cases

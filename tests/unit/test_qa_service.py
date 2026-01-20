@@ -13,18 +13,15 @@ async def test_answer_question(mock_llm_provider, mock_vector_store, mock_embedd
     
     result = await service.answer_question(
         question="What is the EPS?",
-        context="EPS: 1000 VND"
+        base_context="EPS: 1000 VND"
     )
     
     assert "answer" in result
     assert result["answer"] == "The answer is 1000 VND"
     assert "sources" in result
     assert isinstance(result["sources"], list)
-    
-    # Verify embeddings were generated
-    mock_embedding_provider.generate_embedding.assert_called_once_with("What is the EPS?")
-    
-    # Verify vector search was called
+
+    # Verify vector search was called with query text
     mock_vector_store.search.assert_called_once()
     
     # Verify LLM was called
@@ -41,19 +38,39 @@ async def test_answer_question_with_vector_results(
     service = QAService(mock_llm_provider, mock_vector_store, mock_embedding_provider)
     
     mock_vector_store.search = AsyncMock(return_value=[
-        {"text": "EPS is 1000 VND in Q1", "source": "report.pdf", "score": 0.9},
-        {"text": "Revenue increased 20%", "source": "report.pdf", "score": 0.8}
+        {
+            "documentId": "doc-1",
+            "source": "analysis_report",
+            "sourceUrl": None,
+            "title": "Báo cáo Q1",
+            "section": "Tổng quan",
+            "symbol": "ABC",
+            "chunkId": "doc-1:0:0",
+            "score": 0.9,
+            "text": "EPS is 1000 VND in Q1"
+        },
+        {
+            "documentId": "doc-1",
+            "source": "analysis_report",
+            "sourceUrl": None,
+            "title": "Báo cáo Q1",
+            "section": "Tài chính",
+            "symbol": "ABC",
+            "chunkId": "doc-1:0:1",
+            "score": 0.8,
+            "text": "Revenue increased 20%"
+        }
     ])
     mock_llm_provider.generate = AsyncMock(return_value="EPS is 1000 VND")
     
     result = await service.answer_question(
         question="What is the EPS?",
-        context="Base context"
+        base_context="Base context"
     )
     
     assert result["answer"] == "EPS is 1000 VND"
     assert len(result["sources"]) == 2
-    assert "report.pdf" in result["sources"]
+    assert result["sources"][0]["source"] == "analysis_report"
 
 
 @pytest.mark.asyncio

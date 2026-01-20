@@ -34,7 +34,17 @@ def mock_vector_store() -> Mock:
     """Create a mock vector store."""
     mock = Mock(spec=VectorStore)
     mock.search = AsyncMock(return_value=[
-        {"text": "Test document", "source": "test.pdf", "score": 0.9}
+        {
+            "documentId": "doc-1",
+            "source": "analysis_report",
+            "sourceUrl": "https://example.com/report",
+            "title": "Báo cáo Q1",
+            "section": "Tổng quan",
+            "symbol": "ABC",
+            "chunkId": "doc-1:0:0",
+            "score": 0.9,
+            "text": "Test document content"
+        }
     ])
     mock.upsert = AsyncMock(return_value=None)
     return mock
