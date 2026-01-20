@@ -1,7 +1,12 @@
 """Pytest configuration and fixtures for AI Service tests."""
+import os
 import pytest
 from unittest.mock import Mock, AsyncMock
 from typing import Dict, Any, List
+
+# Set default environment variables for testing
+os.environ.setdefault("BLACKBOX_API_KEY", "test-api-key")
+
 from src.domain.interfaces.llm_provider import LLMProvider
 from src.domain.interfaces.vector_store import VectorStore
 from src.domain.interfaces.embedding_provider import EmbeddingProvider

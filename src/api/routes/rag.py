@@ -1,6 +1,7 @@
 """RAG (Retrieval-Augmented Generation) API routes."""
+import os
 from fastapi import APIRouter, Depends, Header, HTTPException, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import Dict, Any, Optional
 from src.application.services.rag_ingest_service import RagIngestService
 from src.api.dependencies import get_rag_ingest_service
@@ -8,9 +9,7 @@ from src.shared.config import get_settings
 from src.shared.logging import get_logger
 
 logger = get_logger(__name__)
-router = APIRouter()
-
-settings = get_settings()
+router = APIRouter(prefix="/rag", tags=["rag"])
 
 
 class IngestRequest(BaseModel):
@@ -19,8 +18,29 @@ class IngestRequest(BaseModel):
     source: str = Field(..., description="Source type (e.g., 'analysis_report')")
     text: str = Field(..., description="Full document text")
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Document metadata")
-    chunk_size: Optional[int] = Field(default=None, description="Chunk size (characters)")
-    chunk_overlap: Optional[int] = Field(default=None, description="Chunk overlap (characters)")
+    chunk_size: Optional[int] = Field(
+        default=None, 
+        ge=300, 
+        le=4000, 
+        description="Chunk size in characters (300-4000)"
+    )
+    chunk_overlap: Optional[int] = Field(
+        default=None, 
+        ge=0, 
+        le=1000, 
+        description="Chunk overlap in characters (0-1000)"
+    )
+    
+    @field_validator("chunk_overlap")
+    @classmethod
+    def validate_overlap_less_than_size(cls, v, info):
+        """Ensure chunk_overlap < chunk_size."""
+        chunk_size = info.data.get("chunk_size")
+        if v is not None and chunk_size is not None and v >= chunk_size:
+            raise ValueError(
+                f"chunk_overlap ({v}) must be less than chunk_size ({chunk_size})"
+            )
+        return v
 
 
 class IngestResponse(BaseModel):
@@ -28,6 +48,13 @@ class IngestResponse(BaseModel):
     chunksUpserted: int = Field(..., description="Number of chunks upserted")
     documentId: str = Field(..., description="Document identifier")
     collection: str = Field(..., description="Vector store collection name")
+    status: str = Field(..., description="Status string")
+
+
+class DeleteResponse(BaseModel):
+    """Response model for delete result."""
+    documentId: str = Field(..., description="Document identifier")
+    deleted: int = Field(..., description="Number of chunks deleted")
     status: str = Field(..., description="Status string")
 
 
@@ -41,13 +68,8 @@ def validate_api_key(x_internal_api_key: Optional[str] = Header(None)):
     Raises:
         HTTPException: 401 if key is missing or invalid
     """
-    # Get expected key from settings
-    expected_key = getattr(settings, 'internal_api_key', None)
-    
-    # If no key configured in settings, check env directly
-    if not expected_key:
-        import os
-        expected_key = os.getenv('INTERNAL_API_KEY')
+    settings = get_settings()
+    expected_key = getattr(settings, "internal_api_key", None) or os.getenv("INTERNAL_API_KEY")
     
     # Validate
     if not expected_key:
@@ -72,7 +94,7 @@ def validate_api_key(x_internal_api_key: Optional[str] = Header(None)):
     return True
 
 
-@router.post("/rag/ingest", response_model=IngestResponse)
+@router.post("/ingest", response_model=IngestResponse)
 async def ingest_document(
     request: IngestRequest,
     service: RagIngestService = Depends(get_rag_ingest_service),
@@ -131,7 +153,7 @@ async def ingest_document(
         )
 
 
-@router.delete("/rag/doc/{document_id}")
+@router.delete("/doc/{document_id}", response_model=DeleteResponse)
 async def delete_document(
     document_id: str,
     service: RagIngestService = Depends(get_rag_ingest_service),
@@ -140,7 +162,11 @@ async def delete_document(
     """Delete all chunks for a document in vector store."""
     try:
         result = await service.delete_document(document_id)
-        return result
+        return DeleteResponse(
+            documentId=result["documentId"],
+            deleted=result["deleted"],
+            status=result["status"]
+        )
     except Exception as e:
         logger.error(f"Error deleting document {document_id}: {str(e)}", exc_info=True)
         raise HTTPException(
