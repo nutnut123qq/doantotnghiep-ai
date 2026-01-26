@@ -212,11 +212,11 @@ async def general_exception_handler(request: Request, exc: Exception):
 # Include routers
 app.include_router(summarize.router, prefix="/api", tags=["summarize"])
 app.include_router(analyze.router, prefix="/api", tags=["analyze"])
-app.include_router(forecast.router, prefix="/api", tags=["forecast"])
+app.include_router(forecast.router, prefix="/api/forecast", tags=["forecast"])  # P0 Fix: Correct prefix for forecast
 app.include_router(qa.router, prefix="/api", tags=["qa"])
 app.include_router(alert_nlp.router, prefix="/api", tags=["alert-nlp"])
 app.include_router(stock_data.router, tags=["stock"])
-app.include_router(insights.router, prefix="/api", tags=["insights"])
+app.include_router(insights.router, prefix="/api/insights", tags=["insights"])  # P0 Fix: Correct prefix for insights
 app.include_router(answer_context.router, prefix="/api/ai", tags=["answer"]) # V1 Analysis Reports Q&A
 app.include_router(rag.router, prefix="/api", tags=["rag"]) # RAG ingestion
 
